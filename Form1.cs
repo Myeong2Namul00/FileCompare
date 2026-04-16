@@ -7,6 +7,10 @@ namespace FileCompare
         public Form1()
         {
             InitializeComponent();
+            lvwLeftDir.MultiSelect = false;
+            lvwRightDir.MultiSelect = false;
+            btnCopyFromLeft.Click += btnCopyFromLeft_Click;
+            btnCopyFromRight.Click += btnCopyFromRight_Click;
         }
 
         private void PopulateListView(ListView lv, string folderPath)
@@ -38,7 +42,7 @@ namespace FileCompare
                     item.Tag = new EntryInfo(false, f.Length, f.LastWriteTime);
                     lv.Items.Add(item);
                 }
-                for (int i = 0; i < lv.Items.Count; i++ )
+                for (int i = 0; i < lv.Columns.Count; i++ )
                 {
                     lv.AutoResizeColumn(i,
                         ColumnHeaderAutoResizeStyle.ColumnContent);
@@ -192,6 +196,97 @@ namespace FileCompare
                     PopulateListView(lvwRightDir, txtRightDir.Text);
                     ColorListViewItem(lvwLeftDir, lvwRightDir);
                 }
+            }
+        }
+
+        private void btnCopyFromLeft_Click(object? sender, EventArgs e)
+        {
+            CopySelectedFile(lvwLeftDir, txtLeftDir.Text, txtRightDir.Text);
+        }
+
+        private void btnCopyFromRight_Click(object? sender, EventArgs e)
+        {
+            CopySelectedFile(lvwRightDir, txtRightDir.Text, txtLeftDir.Text);
+        }
+
+        private void CopySelectedFile(ListView sourceView, string sourceDir, string destinationDir)
+        {
+            if (String.IsNullOrWhiteSpace(sourceDir) || String.IsNullOrWhiteSpace(destinationDir))
+            {
+                MessageBox.Show(this, "양쪽 폴더를 먼저 선택하세요.", "안내",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (sourceView.SelectedItems.Count == 0)
+            {
+                MessageBox.Show(this, "복사할 파일을 선택하세요.", "안내",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var selected = sourceView.SelectedItems[0];
+            if (String.IsNullOrWhiteSpace(selected.Text) || selected.Tag is not EntryInfo sourceInfo)
+            {
+                MessageBox.Show(this, "빈 항목은 복사할 수 없습니다.", "안내",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (sourceInfo.IsDirectory)
+            {
+                MessageBox.Show(this, "폴더는 복사 대상이 아닙니다. 파일을 선택하세요.", "안내",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var sourcePath = Path.Combine(sourceDir, selected.Text);
+            var destinationPath = Path.Combine(destinationDir, selected.Text);
+
+            try
+            {
+                if (File.Exists(sourcePath) == false)
+                {
+                    MessageBox.Show(this, "원본 파일을 찾을 수 없습니다.", "오류",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                if (File.Exists(destinationPath))
+                {
+                    var destinationInfo = new FileInfo(destinationPath);
+                    var sourceFileInfo = new FileInfo(sourcePath);
+
+                    if (sourceFileInfo.LastWriteTime < destinationInfo.LastWriteTime)
+                    {
+                        var result = MessageBox.Show(this,
+                            "더 오래된 파일로 덮어씌우려 하고 있습니다. 진행하시겠습니까?",
+                            "경고",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Warning);
+
+                        if (result != DialogResult.Yes)
+                        {
+                            return;
+                        }
+                    }
+                }
+
+                File.Copy(sourcePath, destinationPath, true);
+
+                PopulateListView(lvwLeftDir, txtLeftDir.Text);
+                PopulateListView(lvwRightDir, txtRightDir.Text);
+                ColorListViewItem(lvwLeftDir, lvwRightDir);
+            }
+            catch (IOException ex)
+            {
+                MessageBox.Show(this, "파일 복사 중 오류: " + ex.Message, "오류",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                MessageBox.Show(this, "접근 권한 오류: " + ex.Message, "오류",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
     }
