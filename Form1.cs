@@ -22,19 +22,20 @@ namespace FileCompare
             {
                 var dirs = Directory.EnumerateDirectories(folderPath)
                     .Select(p => new DirectoryInfo(p))
-                    .OrderBy(d => d.Name);
+                    .OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase);
 
                 foreach (var dir in dirs)
                 {
+                    var directorySummary = GetDirectorySummary(dir.FullName);
                     var item = new ListViewItem(dir.Name);
-                    item.SubItems.Add("<DIR>");
-                    item.SubItems.Add(dir.LastWriteTime.ToString("g"));
-                    item.Tag = new EntryInfo(true, 0, dir.LastWriteTime);
+                    item.SubItems.Add(directorySummary.TotalSize.ToString("N0") + " 바이트");
+                    item.SubItems.Add(directorySummary.LastWriteTime.ToString("g"));
+                    item.Tag = new EntryInfo(true, directorySummary.TotalSize, directorySummary.LastWriteTime);
                     lv.Items.Add(item);
                 }
                 foreach (var f in Directory.EnumerateFiles(folderPath)
                     .Select(p => new FileInfo(p))
-                    .OrderBy(f => f.Name))
+                    .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase))
                 {
                     var item = new ListViewItem(f.Name);
                     item.SubItems.Add(f.Length.ToString("N0") + " 바이트");
@@ -58,10 +59,49 @@ namespace FileCompare
                 MessageBox.Show(this, "입출력 오류: " + ex.Message, "오류",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            catch (UnauthorizedAccessException ex)
+            {
+                MessageBox.Show(this, "접근 권한 오류: " + ex.Message, "오류",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
             finally
             {
                 lv.EndUpdate();
             }
+        }
+
+        private static (long TotalSize, DateTime LastWriteTime) GetDirectorySummary(string directoryPath)
+        {
+            var options = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true
+            };
+
+            var totalSize = 0L;
+            var lastWriteTime = Directory.GetLastWriteTime(directoryPath);
+
+            foreach (var filePath in Directory.EnumerateFiles(directoryPath, "*", options))
+            {
+                var fileInfo = new FileInfo(filePath);
+                totalSize += fileInfo.Length;
+
+                if (fileInfo.LastWriteTime > lastWriteTime)
+                {
+                    lastWriteTime = fileInfo.LastWriteTime;
+                }
+            }
+
+            foreach (var childDirectory in Directory.EnumerateDirectories(directoryPath, "*", options))
+            {
+                var childLastWriteTime = Directory.GetLastWriteTime(childDirectory);
+                if (childLastWriteTime > lastWriteTime)
+                {
+                    lastWriteTime = childLastWriteTime;
+                }
+            }
+
+            return (totalSize, lastWriteTime);
         }
 
         private static ListViewItem CloneListViewItem(ListViewItem source)
@@ -112,6 +152,18 @@ namespace FileCompare
 
                     var item1 = has1 ? CloneListViewItem(src1!) : CreateEmptyItem();
                     var item2 = has2 ? CloneListViewItem(src2!) : CreateEmptyItem();
+                    var isDirectoryItem1 = has1 && item1.Tag is EntryInfo entryInfo1 && entryInfo1.IsDirectory;
+                    var isDirectoryItem2 = has2 && item2.Tag is EntryInfo entryInfo2 && entryInfo2.IsDirectory;
+
+                    if (isDirectoryItem1)
+                    {
+                        item1.Font = new Font(lv1.Font, FontStyle.Bold);
+                    }
+
+                    if (isDirectoryItem2)
+                    {
+                        item2.Font = new Font(lv2.Font, FontStyle.Bold);
+                    }
 
                     if (has1 && has2 && item1.Tag is EntryInfo info1 && item2.Tag is EntryInfo info2)
                     {
@@ -209,6 +261,43 @@ namespace FileCompare
             CopySelectedFile(lvwRightDir, txtRightDir.Text, txtLeftDir.Text);
         }
 
+        private static void CopyDirectoryRecursive(string sourcePath, string destinationPath)
+        {
+            Directory.CreateDirectory(destinationPath);
+
+            foreach (var dir in Directory.EnumerateDirectories(sourcePath, "*", SearchOption.AllDirectories))
+            {
+                var relativePath = Path.GetRelativePath(sourcePath, dir);
+                Directory.CreateDirectory(Path.Combine(destinationPath, relativePath));
+            }
+
+            foreach (var file in Directory.EnumerateFiles(sourcePath, "*", SearchOption.AllDirectories))
+            {
+                var relativePath = Path.GetRelativePath(sourcePath, file);
+                var destinationFilePath = Path.Combine(destinationPath, relativePath);
+                var destinationFolderPath = Path.GetDirectoryName(destinationFilePath);
+
+                if (String.IsNullOrWhiteSpace(destinationFolderPath) == false)
+                {
+                    Directory.CreateDirectory(destinationFolderPath);
+                }
+
+                File.Copy(file, destinationFilePath, true);
+            }
+
+            var allDirectories = Directory.EnumerateDirectories(sourcePath, "*", SearchOption.AllDirectories)
+                .OrderByDescending(path => path.Count(c => c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar));
+
+            foreach (var sourceDir in allDirectories)
+            {
+                var relativePath = Path.GetRelativePath(sourcePath, sourceDir);
+                var destinationDir = Path.Combine(destinationPath, relativePath);
+                Directory.SetLastWriteTime(destinationDir, Directory.GetLastWriteTime(sourceDir));
+            }
+
+            Directory.SetLastWriteTime(destinationPath, Directory.GetLastWriteTime(sourcePath));
+        }
+
         private void CopySelectedFile(ListView sourceView, string sourceDir, string destinationDir)
         {
             if (String.IsNullOrWhiteSpace(sourceDir) || String.IsNullOrWhiteSpace(destinationDir))
@@ -220,7 +309,7 @@ namespace FileCompare
 
             if (sourceView.SelectedItems.Count == 0)
             {
-                MessageBox.Show(this, "복사할 파일을 선택하세요.", "안내",
+                MessageBox.Show(this, "복사할 항목을 선택하세요.", "안내",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
@@ -233,46 +322,79 @@ namespace FileCompare
                 return;
             }
 
-            if (sourceInfo.IsDirectory)
-            {
-                MessageBox.Show(this, "폴더는 복사 대상이 아닙니다. 파일을 선택하세요.", "안내",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
             var sourcePath = Path.Combine(sourceDir, selected.Text);
             var destinationPath = Path.Combine(destinationDir, selected.Text);
 
             try
             {
-                if (File.Exists(sourcePath) == false)
+                if (sourceInfo.IsDirectory)
                 {
-                    MessageBox.Show(this, "원본 파일을 찾을 수 없습니다.", "오류",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
-
-                if (File.Exists(destinationPath))
-                {
-                    var destinationInfo = new FileInfo(destinationPath);
-                    var sourceFileInfo = new FileInfo(sourcePath);
-
-                    if (sourceFileInfo.LastWriteTime < destinationInfo.LastWriteTime)
+                    if (Directory.Exists(sourcePath) == false)
                     {
-                        var result = MessageBox.Show(this,
-                            "더 오래된 파일로 덮어씌우려 하고 있습니다. 진행하시겠습니까?",
-                            "경고",
-                            MessageBoxButtons.YesNo,
-                            MessageBoxIcon.Warning);
+                        MessageBox.Show(this, "원본 폴더를 찾을 수 없습니다.", "오류",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
 
-                        if (result != DialogResult.Yes)
+                    if (Directory.Exists(destinationPath))
+                    {
+                        var sourceSummary = GetDirectorySummary(sourcePath);
+                        var destinationSummary = GetDirectorySummary(destinationPath);
+
+                        if (sourceSummary.LastWriteTime < destinationSummary.LastWriteTime)
                         {
-                            return;
+                            var result = MessageBox.Show(this,
+                                "더 오래된 폴더 내용으로 덮어씌우려 하고 있습니다. 진행하시겠습니까?",
+                                "경고",
+                                MessageBoxButtons.YesNo,
+                                MessageBoxIcon.Warning);
+
+                            if (result != DialogResult.Yes)
+                            {
+                                return;
+                            }
                         }
                     }
-                }
 
-                File.Copy(sourcePath, destinationPath, true);
+                    CopyDirectoryRecursive(sourcePath, destinationPath);
+                }
+                else
+                {
+                    if (File.Exists(sourcePath) == false)
+                    {
+                        MessageBox.Show(this, "원본 파일을 찾을 수 없습니다.", "오류",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
+                    var destinationFolderPath = Path.GetDirectoryName(destinationPath);
+                    if (String.IsNullOrWhiteSpace(destinationFolderPath) == false)
+                    {
+                        Directory.CreateDirectory(destinationFolderPath);
+                    }
+
+                    if (File.Exists(destinationPath))
+                    {
+                        var destinationInfo = new FileInfo(destinationPath);
+                        var sourceFileInfo = new FileInfo(sourcePath);
+
+                        if (sourceFileInfo.LastWriteTime < destinationInfo.LastWriteTime)
+                        {
+                            var result = MessageBox.Show(this,
+                                "더 오래된 파일로 덮어씌우려 하고 있습니다. 진행하시겠습니까?",
+                                "경고",
+                                MessageBoxButtons.YesNo,
+                                MessageBoxIcon.Warning);
+
+                            if (result != DialogResult.Yes)
+                            {
+                                return;
+                            }
+                        }
+                    }
+
+                    File.Copy(sourcePath, destinationPath, true);
+                }
 
                 PopulateListView(lvwLeftDir, txtLeftDir.Text);
                 PopulateListView(lvwRightDir, txtRightDir.Text);
